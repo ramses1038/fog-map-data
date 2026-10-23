@@ -347,7 +347,16 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         n = PER_KIND.get(kind, 10)
         # 조회수 순, 조회수를 못 받았으면 위키데이터 언어판 수로
         lst = sorted(by_city.get(props["id"], []), key=lambda c: -c.get("links", 0))
-        picked = lst[:n]
+        # 이름이 같은 곳(같은 장소가 문서 두 개로 있는 경우)은 하나만
+        seen, picked = set(), []
+        for c in lst:
+            key = c["name"].replace(" ", "")
+            if key in seen:
+                continue
+            seen.add(key)
+            picked.append(c)
+            if len(picked) >= n:
+                break
         summary_cities[props["name"]] = [f'{c["name"]}({c["cat"]})' for c in picked]
         for c in picked:
             g = c["geom"]
