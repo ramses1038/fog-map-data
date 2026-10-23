@@ -113,7 +113,7 @@ def meters_deg(m):
 def views(title, start, end):
     url = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/ko.wikipedia/"
            f"all-access/user/{urllib.parse.quote(title.replace(' ', '_'), safe='')}/monthly/{start}/{end}")
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with urllib.request.urlopen(req, timeout=20) as r:
@@ -122,7 +122,8 @@ def views(title, start, end):
             if e.code == 404:
                 return 0
             DIAG["errors"].append(f"views {e.code}")
-            time.sleep(1 + attempt * 2)
+            ra = e.headers.get("Retry-After") if e.headers else None
+            time.sleep(int(ra) if ra and ra.isdigit() else 2 + attempt * 3)
         except Exception:
             time.sleep(1 + attempt * 2)
     return 0
@@ -154,14 +155,28 @@ SPARQL = "https://query.wikidata.org/sparql"
 DIAG = {"wd": {}, "errors": []}
 
 
+_last_sparql = [0.0]
+
+
 def sparql(q):
+    """위키데이터 질의. 깃허브 서버에서는 1분에 1번으로 제한되므로 간격을 지킨다."""
     url = SPARQL + "?format=json&query=" + urllib.parse.quote(q)
-    for attempt in range(4):
+    for attempt in range(5):
+        wait = 62 - (time.time() - _last_sparql[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_sparql[0] = time.time()
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA,
                                                        "Accept": "application/sparql-results+json"})
             with urllib.request.urlopen(req, timeout=120) as r:
                 return json.load(r)["results"]["bindings"]
+        except urllib.error.HTTPError as e:
+            ra = e.headers.get("Retry-After") if e.headers else None
+            print(f"  sparql retry {attempt}: {e.code} retry-after={ra}", flush=True)
+            DIAG["errors"].append(f"sparql {e.code}")
+            if ra and ra.isdigit():
+                time.sleep(int(ra))
         except Exception as e:
             print(f"  sparql retry {attempt}: {e}", flush=True)
             DIAG["errors"].append(f"sparql: {str(e)[:80]}")
@@ -181,15 +196,16 @@ def wikidata_candidates():
                 lon, lat = map(float, wkt[wkt.index("(") + 1:wkt.index(")")].split())
             except ValueError:
                 continue
+            links = int(r.get("links", {}).get("value", 0) or 0)
             if title not in out:
                 out[title] = {"title": title, "name": title, "cat": cat,
-                              "geom": Point(lon, lat), "ele": None,
+                              "geom": Point(lon, lat), "ele": None, "links": links,
                               "qid": r["item"]["value"].rsplit("/", 1)[-1]}
 
     for q, cat in WD_CLASSES.items():
         rows = sparql(f"""
-SELECT ?item ?title ?coord WHERE {{
-  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P31/wdt:P279* wd:{q}.
+SELECT ?item ?title ?coord ?links WHERE {{
+  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P31/wdt:P279* wd:{q}; wikibase:sitelinks ?links.
   ?article schema:about ?item; schema:isPartOf <https://ko.wikipedia.org/>; schema:name ?title.
 }}""")
         add(rows, cat)
@@ -197,8 +213,8 @@ SELECT ?item ?title ?coord WHERE {{
         print(f"  wikidata {q} ({cat}): {len(rows)}", flush=True)
     # 문화재 중 사적·명승 (국보·보물은 옮길 수 있는 유물이 많아 뺌)
     rows = sparql("""
-SELECT ?item ?title ?coord WHERE {
-  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P1435 ?d.
+SELECT ?item ?title ?coord ?links WHERE {
+  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P1435 ?d; wikibase:sitelinks ?links.
   ?d rdfs:label ?dl. FILTER(LANG(?dl) = "ko" && (CONTAINS(?dl, "사적") || CONTAINS(?dl, "명승")))
   ?article schema:about ?item; schema:isPartOf <https://ko.wikipedia.org/>; schema:name ?title.
 }""")
@@ -293,7 +309,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
 
     # 4) 조회수
     titles = list(cands)
-    with ThreadPoolExecutor(12) as ex:
+    with ThreadPoolExecutor(3) as ex:
         for t, v in zip(titles, ex.map(lambda t: views(t, start, end), titles)):
             cands[t]["views"] = v
     print("views done", flush=True)
@@ -307,8 +323,10 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
     for props, _ in cities:
         kind = "special" if props["name"] == "서울특별시" else props["kind"]
         n = PER_KIND.get(kind, 10)
-        lst = sorted(by_city.get(props["id"], []), key=lambda c: -c["views"])
-        picked = [c for c in lst if c["views"] > 0][:n]
+        # 조회수 순, 조회수를 못 받았으면 위키데이터 언어판 수로
+        lst = sorted(by_city.get(props["id"], []),
+                     key=lambda c: (-c["views"], -c.get("links", 0)))
+        picked = [c for c in lst if c["views"] > 0 or c.get("links", 0) > 0][:n]
         summary_cities[props["name"]] = [f'{c["name"]}({c["cat"]})' for c in picked]
         for c in picked:
             g = c["geom"]
