@@ -17,8 +17,8 @@ import sys
 
 import h3
 from shapely import STRtree
-from shapely.geometry import mapping, shape
-from shapely.ops import unary_union
+from shapely.geometry import LineString, MultiLineString, Polygon, mapping, shape
+from shapely.ops import linemerge, unary_union
 
 RES = 11
 SIMPLIFY_DEG = 0.0001  # 약 10m
@@ -51,18 +51,46 @@ def load(path):
 
 
 def load_land(path):
-    """해안선으로 만든 육지 도형 (osmdata.openstreetmap.de land polygons)."""
-    polys = []
+    """오픈스트리트맵 해안선(natural=coastline) 선들로 육지 도형을 만든다.
+
+    해안선은 육지가 왼쪽에 오도록 그려진 선이다. 섬처럼 닫힌 선은 그대로 육지가 되고,
+    한반도 본토 해안선은 휴전선 근처 자료 경계에서 끊겨 있으므로
+    양 끝을 북쪽(북위 40도)으로 이어 닫는다. (남한 도시를 자르는 데만 쓰므로 충분)
+    """
+    lines = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip().lstrip("\x1e")
             if not line:
                 continue
             g = shape(json.loads(line)["geometry"])
-            if not g.is_valid:
-                g = g.buffer(0)
-            if not g.is_empty:
-                polys.append(g)
+            if isinstance(g, LineString) and len(g.coords) >= 2:
+                lines.append(g)
+    merged = linemerge(MultiLineString(lines))
+    parts = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
+
+    polys, open_chains = [], []
+    for ln in parts:
+        if ln.is_ring and len(ln.coords) >= 4:
+            p = Polygon(ln.coords)
+            if not p.is_valid:
+                p = p.buffer(0)
+            if not p.is_empty:
+                polys.append(p)
+        else:
+            open_chains.append(ln)
+
+    if open_chains:
+        main = max(open_chains, key=lambda l: l.length)
+        (sx, sy), (ex, ey) = main.coords[0], main.coords[-1]
+        ring = list(main.coords) + [(ex, 40.0), (sx, 40.0), (sx, sy)]
+        p = Polygon(ring)
+        if not p.is_valid:
+            p = p.buffer(0)
+        polys.append(p)
+        print(f"open coastline chains: {len(open_chains)} "
+              f"(main {main.length:.2f} deg, ends {main.coords[0]} {main.coords[-1]})")
+    print(f"land polygons: {len(polys)}")
     return polys, STRtree(polys)
 
 

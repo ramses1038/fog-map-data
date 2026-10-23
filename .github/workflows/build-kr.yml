@@ -22,32 +22,17 @@ jobs:
       - name: 도구 설치
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq osmium-tool gdal-bin
+          sudo apt-get install -y -qq osmium-tool
           pip install --quiet shapely h3
 
       - name: 오픈스트리트맵 한국 자료 내려받기
         run: curl -sSL -o kr.osm.pbf https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
 
-      # 육지 도형은 크고(약 900MB) 자주 바뀌지 않으므로 한국 부분만 잘라 저장해 둔다.
-      - name: 육지 도형 저장본 확인
-        id: land-cache
-        uses: actions/cache@v4
-        with:
-          path: land.geojsonseq
-          key: land-kr-v1
-
-      - name: 육지 도형 내려받기 (바다 제외용)
-        if: steps.land-cache.outputs.cache-hit != 'true'
+      - name: 해안선 뽑기 (바다 제외용)
         run: |
-          url=https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip
-          for i in 1 2 3 4 5 6; do
-            curl -fL -C - --connect-timeout 30 --speed-time 60 --speed-limit 20000 \
-              --retry 3 --retry-delay 10 -o land.zip "$url" && break
-            echo "다시 시도 ($i)"; sleep 20
-          done
-          unzip -q land.zip
-          ogr2ogr -f GeoJSONSeq land.geojsonseq land-polygons-split-4326/land_polygons.shp \
-            -spat 124 32.5 132 39
+          osmium tags-filter kr.osm.pbf w/natural=coastline -o coast.osm.pbf --overwrite
+          osmium export coast.osm.pbf --geometry-types=linestring \
+            -f geojsonseq -o land.geojsonseq --overwrite
 
       - name: 행정 경계 뽑기
         run: |
