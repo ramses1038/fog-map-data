@@ -1,0 +1,50 @@
+# 한국 시·군 경계 데이터를 만들어 Release(kr-v1)에 올린다.
+name: build-kr
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_kr.py'
+      - '.github/workflows/build-kr.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+          pip install --quiet shapely h3
+
+      - name: 오픈스트리트맵 한국 자료 내려받기
+        run: curl -sSL -o kr.osm.pbf https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
+
+      - name: 행정 경계 뽑기
+        run: |
+          osmium tags-filter kr.osm.pbf r/boundary=administrative -o adm.osm.pbf --overwrite
+          osmium export adm.osm.pbf --geometry-types=polygon -a type,id \
+            -f geojsonseq -o adm.geojsonseq --overwrite
+
+      - name: 도시 데이터 만들기
+        run: |
+          mkdir -p out
+          python scripts/build_kr.py adm.geojsonseq out | tee out/log.txt
+          echo "::notice title=summary::$(cat out/KR.summary.json | tr -d '\n')"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view kr-v1 >/dev/null 2>&1 || \
+            gh release create kr-v1 --title "한국 시·군 경계 v1" \
+              --notes "오픈스트리트맵 자료로 만든 한국 시·군 경계. © OpenStreetMap contributors (ODbL)"
+          gh release upload kr-v1 out/KR.cities.geojson.gz out/KR.summary.json --clobber
