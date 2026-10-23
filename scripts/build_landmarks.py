@@ -121,6 +121,7 @@ def views(title, start, end):
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return 0
+            DIAG["errors"].append(f"views {e.code}")
             time.sleep(1 + attempt * 2)
         except Exception:
             time.sleep(1 + attempt * 2)
@@ -150,6 +151,7 @@ WD_CLASSES = {
     "Q34038": "attraction",    # 폭포
 }
 SPARQL = "https://query.wikidata.org/sparql"
+DIAG = {"wd": {}, "errors": []}
 
 
 def sparql(q):
@@ -162,6 +164,7 @@ def sparql(q):
                 return json.load(r)["results"]["bindings"]
         except Exception as e:
             print(f"  sparql retry {attempt}: {e}", flush=True)
+            DIAG["errors"].append(f"sparql: {str(e)[:80]}")
             time.sleep(5 + attempt * 10)
     return []
 
@@ -190,6 +193,7 @@ SELECT ?item ?title ?coord WHERE {{
   ?article schema:about ?item; schema:isPartOf <https://ko.wikipedia.org/>; schema:name ?title.
 }}""")
         add(rows, cat)
+        DIAG["wd"][q] = len(rows)
         print(f"  wikidata {q} ({cat}): {len(rows)}", flush=True)
     # 문화재 중 사적·명승 (국보·보물은 옮길 수 있는 유물이 많아 뺌)
     rows = sparql("""
@@ -245,6 +249,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         if title not in cands:
             cands[title] = c
     print(f"candidates total: {len(cands)}", flush=True)
+    DIAG["candidates_total"] = len(cands)
 
     # 2) 산 정상: 안전하고 대중적인 곳만
     peaks = [c for c in cands.values() if c["cat"] == "peak"]
@@ -284,6 +289,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
             continue
         c["city"] = cities[hit[0]][0]
     print(f"in cities: {len(cands)}", flush=True)
+    DIAG["in_cities"] = len(cands)
 
     # 4) 조회수
     titles = list(cands)
@@ -291,6 +297,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         for t, v in zip(titles, ex.map(lambda t: views(t, start, end), titles)):
             cands[t]["views"] = v
     print("views done", flush=True)
+    DIAG["views_nonzero"] = sum(1 for c in cands.values() if c["views"] > 0)
 
     # 5) 도시마다 고르기
     by_city = {}
@@ -337,6 +344,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
             if len(summary_cities[props["name"]]) <
             PER_KIND.get("special" if props["name"] == "서울특별시" else props["kind"], 10)),
         "raw_bytes": len(raw),
+        "diag": {**DIAG, "errors": DIAG["errors"][:10], "error_count": len(DIAG["errors"])},
         "samples": {k: summary_cities.get(k) for k in
                     ["서울특별시", "부산광역시", "광주", "순천시", "광양시", "여수시", "제주시", "울릉군"]},
     }
