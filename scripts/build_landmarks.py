@@ -75,6 +75,26 @@ def ko_title(p, qmap):
     return qmap.get(q)
 
 
+def wikidata_link_counts(qids):
+    """위키데이터 번호 → 문서가 있는 언어판 수 (50개씩)."""
+    out = {}
+    for i in range(0, len(qids), 50):
+        part = "|".join(qids[i:i + 50])
+        url = ("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json"
+               f"&props=sitelinks&ids={part}")
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    for q, e in json.load(r).get("entities", {}).items():
+                        out[q] = sum(1 for k in (e.get("sitelinks") or {})
+                                     if k.endswith("wiki") and k != "commonswiki")
+                break
+            except Exception:
+                time.sleep(2 + attempt * 3)
+    return out
+
+
 def wikidata_ko_titles(qids):
     """위키데이터 번호 → 한국어 위키백과 문서 이름 (50개씩 묻는다)."""
     out = {}
@@ -258,7 +278,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         # 같은 문서가 여러 곳이면 면을 우선
         if old is None or (old["geom"].geom_type == "Point" and g.geom_type != "Point"):
             cands[title] = {"title": title, "name": name, "cat": cat, "geom": g,
-                            "ele": p.get("ele")}
+                            "ele": p.get("ele"), "qid": (p.get("wikidata") or "").strip()}
     print(f"candidates from OSM: {len(cands)}", flush=True)
     # 위키데이터 후보 더하기 (같은 문서가 OSM에 면으로 있으면 OSM 쪽을 씀)
     for title, c in wikidata_candidates().items():
@@ -307,13 +327,15 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
     print(f"in cities: {len(cands)}", flush=True)
     DIAG["in_cities"] = len(cands)
 
-    # 4) 조회수
-    titles = list(cands)
-    with ThreadPoolExecutor(3) as ex:
-        for t, v in zip(titles, ex.map(lambda t: views(t, start, end), titles)):
-            cands[t]["views"] = v
-    print("views done", flush=True)
-    DIAG["views_nonzero"] = sum(1 for c in cands.values() if c["views"] > 0)
+    # 4) 인기: 위키데이터에서 몇 개 언어로 문서가 있는지 (조회수는 요청 제한 때문에 너무 느려서 쓰지 않음)
+    need = sorted({c["qid"] for c in cands.values() if c.get("qid") and not c.get("links")})
+    counts = wikidata_link_counts(need)
+    for c in cands.values():
+        if not c.get("links"):
+            c["links"] = counts.get(c.get("qid"), 1)  # 한국어 문서는 있으므로 최소 1
+        c["views"] = 0
+    DIAG["links_fetched"] = len(counts)
+    print("popularity done", flush=True)
 
     # 5) 도시마다 고르기
     by_city = {}
@@ -324,9 +346,8 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         kind = "special" if props["name"] == "서울특별시" else props["kind"]
         n = PER_KIND.get(kind, 10)
         # 조회수 순, 조회수를 못 받았으면 위키데이터 언어판 수로
-        lst = sorted(by_city.get(props["id"], []),
-                     key=lambda c: (-c["views"], -c.get("links", 0)))
-        picked = [c for c in lst if c["views"] > 0 or c.get("links", 0) > 0][:n]
+        lst = sorted(by_city.get(props["id"], []), key=lambda c: -c.get("links", 0))
+        picked = lst[:n]
         summary_cities[props["name"]] = [f'{c["name"]}({c["cat"]})' for c in picked]
         for c in picked:
             g = c["geom"]
@@ -336,7 +357,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
                 "wiki": c["title"],
                 "cat": c["cat"],
                 "city": props["id"],
-                "views": c["views"],
+                "links": c.get("links", 0),
             }
             pt = g.representative_point() if g.geom_type != "Point" else g
             item["lat"], item["lon"] = round(pt.y, 5), round(pt.x, 5)
