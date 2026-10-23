@@ -133,10 +133,20 @@ def main(src, land_path, out_dir):
 
     metro_suffix = ("특별시", "광역시", "특별자치시")
     cities = []
+    def nm(p):
+        return p.get("name:ko") or p.get("name", "")
+
+    # 이름이 '특별시'여도 안에 '○○시'가 여럿 있으면 도처럼 다룬다.
+    # (예: 2026-07 출범한 전남광주통합특별시 — 전남 시·군은 각각, 옛 광주광역시는 1개 도시)
+    def has_cities_inside(g4):
+        return sum(1 for p6, g6 in lvl6
+                   if nm(p6).endswith("시") and g4.contains(g6.representative_point())) >= 2
+
     metros = [(p, g) for p, g in lvl4
-              if (p.get("name:ko") or p.get("name", "")).endswith(metro_suffix)]
+              if nm(p).endswith(metro_suffix) and not has_cities_inside(g)]
     metro_ids = {id(g) for _, g in metros}
     others = [(p, g) for p, g in lvl4 if id(g) not in metro_ids]
+    merged_notes = []
 
     def add_city(p, g, province, kind):
         g = clip_to_land(g)
@@ -181,6 +191,22 @@ def main(src, land_path, out_dir):
         add_city(p6, g6, province, "city" if n6.endswith("시") else "county")
     unmatched_provinces = orphans
 
+    # 도처럼 다룬 특별시 안의 자치구들(옛 광역시)은 묶어서 1개 도시로.
+    for p4, g4 in others:
+        if not nm(p4).endswith(metro_suffix):
+            continue
+        gus = [(p6, g6) for p6, g6 in lvl6
+               if nm(p6).endswith("구") and g4.contains(g6.representative_point())]
+        if not gus:
+            merged_notes.append(f"{nm(p4)}: 자치구 없음")
+            continue
+        name = "광주" if "광주" in nm(p4) else nm(p4) + " 자치구"
+        g = unary_union([g6 for _, g6 in gus])
+        add_city({"name:ko": name, "name:en": "Gwangju" if name == "광주" else None,
+                  "@id": "gu-" + str(gus[0][0].get("@id", gus[0][0].get("id", "")))},
+                 g, nm(p4), "metro")
+        merged_notes.append(f"{nm(p4)}: 자치구 {len(gus)}개 → {name}")
+
     cities.sort(key=lambda c: (c["properties"]["province"], c["properties"]["name"]))
     fc = {
         "type": "FeatureCollection",
@@ -196,7 +222,7 @@ def main(src, land_path, out_dir):
     by_name = {c["properties"]["name"]: c["properties"] for c in cities}
     samples = {}
     for n in ["서울특별시", "부산광역시", "순천시", "광양시", "목포시", "해남군",
-              "제주시", "서귀포시", "수원시", "세종특별자치시", "신안군", "울릉군"]:
+              "제주시", "서귀포시", "수원시", "세종특별자치시", "신안군", "울릉군", "광주"]:
         if n in by_name:
             samples[n] = by_name[n]["area_km2"]
     summary = {
@@ -207,6 +233,7 @@ def main(src, land_path, out_dir):
         "county": sum(1 for c in cities if c["properties"]["kind"] == "county"),
         "province_names": sorted({p.get("name:ko") or p.get("name") for p, _ in lvl4}),
         "cities_without_province": unmatched_provinces,
+        "merged_metro_notes": merged_notes,
         "approx_km2": samples,
         "total_cells": sum(c["properties"]["cells"] for c in cities),
         "gz_bytes": None,
