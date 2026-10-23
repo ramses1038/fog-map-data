@@ -1,4 +1,4 @@
-# 한국 시·군 경계 데이터를 만들어 Release(kr-v1)에 올린다.
+# 한국 시·군 경계 데이터를 만들어 Release(kr-v2)에 올린다.
 name: build-kr
 
 on:
@@ -34,6 +34,13 @@ jobs:
           osmium export coast.osm.pbf --geometry-types=linestring \
             -f geojsonseq -o land.geojsonseq --overwrite
 
+      - name: 다리·부두 뽑기 (바다 위지만 땅의 연장)
+        run: |
+          osmium tags-filter kr.osm.pbf w/bridge w/man_made=pier,breakwater,groyne,quay \
+            -o extra.osm.pbf --overwrite
+          osmium export extra.osm.pbf --geometry-types=linestring,polygon \
+            -a type,id -f geojsonseq -o extra.geojsonseq --overwrite
+
       - name: 행정 경계 뽑기
         run: |
           osmium tags-filter kr.osm.pbf r/boundary=administrative -o adm.osm.pbf --overwrite
@@ -43,14 +50,14 @@ jobs:
       - name: 도시 데이터 만들기
         run: |
           mkdir -p out
-          python scripts/build_kr.py adm.geojsonseq land.geojsonseq out | tee out/log.txt
+          python scripts/build_kr.py adm.geojsonseq land.geojsonseq extra.geojsonseq out | tee out/log.txt
           echo "::notice title=summary::$(cat out/KR.summary.json | tr -d '\n')"
 
       - name: Release 업로드
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view kr-v1 >/dev/null 2>&1 || \
-            gh release create kr-v1 --title "한국 시·군 경계 v1" \
-              --notes "오픈스트리트맵 자료로 만든 한국 시·군 경계. © OpenStreetMap contributors (ODbL)"
-          gh release upload kr-v1 out/KR.cities.geojson.gz out/KR.summary.json --clobber
+          gh release view kr-v2 >/dev/null 2>&1 || \
+            gh release create kr-v2 --title "한국 시·군 경계 v2" \
+              --notes "오픈스트리트맵 자료로 만든 한국 시·군 경계 (다리·부두 포함). © OpenStreetMap contributors (ODbL)"
+          gh release upload kr-v2 out/KR.cities.geojson.gz out/KR.summary.json --clobber

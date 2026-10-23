@@ -94,6 +94,40 @@ def load_land(path):
     return polys, STRtree(polys)
 
 
+BRIDGE_HALF_DEG = 0.0001  # 다리·부두 반폭 약 10m (폭 약 20m 띠)
+
+
+def load_extra(path):
+    """다리(bridge=*)와 부두·방파제(man_made=pier 등)를 띠 모양 도형으로.
+
+    바다 위에 있어도 땅의 연장으로 보고 도시 모양에 더한다.
+    (다리 위에 있으면 그 다리가 속한 시·군으로 판정되고, 다리도 탐험률에 들어감)
+    """
+    shapes = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip().lstrip("\x1e")
+            if not line:
+                continue
+            ft = json.loads(line)
+            p = ft.get("properties", {})
+            if p.get("bridge") in (None, "no"):
+                if p.get("man_made") not in ("pier", "breakwater", "groyne", "quay"):
+                    continue
+            try:
+                g = shape(ft["geometry"])
+            except Exception:
+                continue
+            if g.is_empty:
+                continue
+            g = g.buffer(BRIDGE_HALF_DEG, cap_style="flat") if g.geom_type in (
+                "LineString", "MultiLineString") else g.buffer(0)
+            if not g.is_empty:
+                shapes.append(g)
+    print(f"bridges/piers: {len(shapes)}")
+    return shapes, STRtree(shapes)
+
+
 def round_coords(obj, nd=5):
     if isinstance(obj, (list, tuple)):
         if obj and isinstance(obj[0], (int, float)):
@@ -102,9 +136,10 @@ def round_coords(obj, nd=5):
     return obj
 
 
-def main(src, land_path, out_dir):
+def main(src, land_path, extra_path, out_dir):
     feats = load(src)
     land_polys, land_tree = load_land(land_path)
+    extra_shapes, extra_tree = load_extra(extra_path)
 
     def clip_to_land(g):
         idx = land_tree.query(g)
@@ -115,6 +150,8 @@ def main(src, land_path, out_dir):
         pad = 0.01
         pieces = [clip_by_rect(land_polys[i], minx - pad, miny - pad,
                                maxx + pad, maxy + pad) for i in idx]
+        # 다리·부두도 땅으로
+        pieces += [extra_shapes[i] for i in extra_tree.query(g)]
         land = unary_union([q for q in pieces if not q.is_empty])
         out = g.intersection(land)
         return out if not out.is_empty else g
@@ -247,4 +284,4 @@ def main(src, land_path, out_dir):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], sys.argv[3])
+    main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
