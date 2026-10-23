@@ -127,6 +127,82 @@ def views(title, start, end):
     return 0
 
 
+# 위키데이터에서 직접 가져올 종류 (한국 OSM 자료에는 위키 태그가 드물어서)
+WD_CLASSES = {
+    "Q570116": "attraction",   # 관광지
+    "Q194195": "attraction",   # 놀이공원
+    "Q2281788": "attraction",  # 수족관
+    "Q43501": "attraction",    # 동물원
+    "Q16560": "heritage",      # 궁궐
+    "Q23413": "heritage",      # 성
+    "Q57821": "heritage",      # 요새·산성
+    "Q381885": "heritage",     # 무덤·왕릉
+    "Q5393308": "temple",      # 불교 사찰
+    "Q33506": "museum",        # 박물관
+    "Q207694": "museum",       # 미술관
+    "Q8502": "peak",           # 산
+    "Q40080": "beach",         # 해변
+    "Q22698": "park",          # 공원
+    "Q12280": "structure",     # 다리
+    "Q12518": "structure",     # 탑·타워
+    "Q39715": "structure",     # 등대
+    "Q1440300": "viewpoint",   # 전망대
+    "Q34038": "attraction",    # 폭포
+}
+SPARQL = "https://query.wikidata.org/sparql"
+
+
+def sparql(q):
+    url = SPARQL + "?format=json&query=" + urllib.parse.quote(q)
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                       "Accept": "application/sparql-results+json"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.load(r)["results"]["bindings"]
+        except Exception as e:
+            print(f"  sparql retry {attempt}: {e}", flush=True)
+            time.sleep(5 + attempt * 10)
+    return []
+
+
+def wikidata_candidates():
+    """한국에 있고 좌표·한국어 위키백과 문서가 있는 장소들 (종류별로 묻는다)."""
+    out = {}
+
+    def add(rows, cat):
+        for r in rows:
+            title = r["title"]["value"]
+            wkt = r["coord"]["value"]  # Point(lon lat)
+            try:
+                lon, lat = map(float, wkt[wkt.index("(") + 1:wkt.index(")")].split())
+            except ValueError:
+                continue
+            if title not in out:
+                out[title] = {"title": title, "name": title, "cat": cat,
+                              "geom": Point(lon, lat), "ele": None,
+                              "qid": r["item"]["value"].rsplit("/", 1)[-1]}
+
+    for q, cat in WD_CLASSES.items():
+        rows = sparql(f"""
+SELECT ?item ?title ?coord WHERE {{
+  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P31/wdt:P279* wd:{q}.
+  ?article schema:about ?item; schema:isPartOf <https://ko.wikipedia.org/>; schema:name ?title.
+}}""")
+        add(rows, cat)
+        print(f"  wikidata {q} ({cat}): {len(rows)}", flush=True)
+    # 문화재 중 사적·명승 (국보·보물은 옮길 수 있는 유물이 많아 뺌)
+    rows = sparql("""
+SELECT ?item ?title ?coord WHERE {
+  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P1435 ?d.
+  ?d rdfs:label ?dl. FILTER(LANG(?dl) = "ko" && (CONTAINS(?dl, "사적") || CONTAINS(?dl, "명승")))
+  ?article schema:about ?item; schema:isPartOf <https://ko.wikipedia.org/>; schema:name ?title.
+}""")
+    add(rows, "heritage")
+    print(f"  wikidata 사적·명승: {len(rows)}", flush=True)
+    return out
+
+
 def main(wiki_p, roads_p, cities_p, out_dir, start, end):
     # 1) 후보
     qids = set()
@@ -163,7 +239,12 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         if old is None or (old["geom"].geom_type == "Point" and g.geom_type != "Point"):
             cands[title] = {"title": title, "name": name, "cat": cat, "geom": g,
                             "ele": p.get("ele")}
-    print(f"candidates: {len(cands)}", flush=True)
+    print(f"candidates from OSM: {len(cands)}", flush=True)
+    # 위키데이터 후보 더하기 (같은 문서가 OSM에 면으로 있으면 OSM 쪽을 씀)
+    for title, c in wikidata_candidates().items():
+        if title not in cands:
+            cands[title] = c
+    print(f"candidates total: {len(cands)}", flush=True)
 
     # 2) 산 정상: 안전하고 대중적인 곳만
     peaks = [c for c in cands.values() if c["cat"] == "peak"]
