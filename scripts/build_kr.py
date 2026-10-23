@@ -18,7 +18,7 @@ import sys
 import h3
 from shapely import STRtree
 from shapely.geometry import LineString, MultiLineString, Polygon, mapping, shape
-from shapely.ops import linemerge, unary_union
+from shapely.ops import clip_by_rect, linemerge, unary_union
 
 RES = 11
 SIMPLIFY_DEG = 0.0001  # 약 10m
@@ -110,7 +110,12 @@ def main(src, land_path, out_dir):
         idx = land_tree.query(g)
         if len(idx) == 0:
             return g
-        land = unary_union([land_polys[i] for i in idx])
+        # 본토 도형은 아주 크므로 도시 주변 사각형만 잘라서 쓴다 (속도)
+        minx, miny, maxx, maxy = g.bounds
+        pad = 0.01
+        pieces = [clip_by_rect(land_polys[i], minx - pad, miny - pad,
+                               maxx + pad, maxy + pad) for i in idx]
+        land = unary_union([q for q in pieces if not q.is_empty])
         out = g.intersection(land)
         return out if not out.is_empty else g
     korea = [g for lvl, p, g in feats
@@ -139,6 +144,7 @@ def main(src, land_path, out_dir):
         sample = list(cells)[:3000]
         mean_km2 = (sum(h3.cell_area(c, "km^2") for c in sample) / len(sample)
                     if sample else 0)
+        print(f"  {p.get('name:ko') or p.get('name')}: {len(cells)} cells", flush=True)
         simple = g.simplify(SIMPLIFY_DEG, preserve_topology=True)
         cities.append({
             "type": "Feature",
