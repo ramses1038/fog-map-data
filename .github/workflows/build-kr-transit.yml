@@ -1,0 +1,51 @@
+# 이동 보정용 자료(철도망·역·터널·지하 보행 통로)를 만들어 Release(kr-v2)에 더한다.
+name: build-kr-transit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_transit.py'
+      - '.github/workflows/build-kr-transit.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+
+      - name: 오픈스트리트맵 한국 자료 내려받기
+        run: curl -sSL -o kr.osm.pbf https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
+
+      - name: 철도·역·터널·지하 통로 뽑기
+        run: |
+          ex() { osmium export "$1" --geometry-types="$2" -a type,id -f geojsonseq -o "$3" --overwrite; }
+          osmium tags-filter kr.osm.pbf w/railway -o rail.osm.pbf --overwrite
+          ex rail.osm.pbf linestring rail.geojsonseq
+          osmium tags-filter kr.osm.pbf n/railway=station,halt n/public_transport=station -o st.osm.pbf --overwrite
+          ex st.osm.pbf point stations.geojsonseq
+          osmium tags-filter kr.osm.pbf w/tunnel -o tun.osm.pbf --overwrite
+          ex tun.osm.pbf linestring tunnels.geojsonseq
+          osmium tags-filter kr.osm.pbf w/highway=footway,corridor,pedestrian,steps,path -o walk.osm.pbf --overwrite
+          ex walk.osm.pbf linestring under.geojsonseq
+
+      - name: 이동 보정 자료 만들기
+        run: |
+          mkdir -p out
+          python scripts/build_transit.py rail.geojsonseq stations.geojsonseq tunnels.geojsonseq under.geojsonseq out | tee log.txt
+          echo "::notice title=transit::$(tail -n 1 log.txt)"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload kr-v2 out/KR.transit.json.gz out/KR.transit.summary.json --clobber
