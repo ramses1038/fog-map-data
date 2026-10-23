@@ -16,7 +16,9 @@ import json
 import sys
 
 import h3
+from shapely import STRtree
 from shapely.geometry import mapping, shape
+from shapely.ops import unary_union
 
 RES = 11
 SIMPLIFY_DEG = 0.0001  # 약 10m
@@ -48,6 +50,22 @@ def load(path):
     return feats
 
 
+def load_land(path):
+    """해안선으로 만든 육지 도형 (osmdata.openstreetmap.de land polygons)."""
+    polys = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip().lstrip("\x1e")
+            if not line:
+                continue
+            g = shape(json.loads(line)["geometry"])
+            if not g.is_valid:
+                g = g.buffer(0)
+            if not g.is_empty:
+                polys.append(g)
+    return polys, STRtree(polys)
+
+
 def round_coords(obj, nd=5):
     if isinstance(obj, (list, tuple)):
         if obj and isinstance(obj[0], (int, float)):
@@ -56,8 +74,17 @@ def round_coords(obj, nd=5):
     return obj
 
 
-def main(src, out_dir):
+def main(src, land_path, out_dir):
     feats = load(src)
+    land_polys, land_tree = load_land(land_path)
+
+    def clip_to_land(g):
+        idx = land_tree.query(g)
+        if len(idx) == 0:
+            return g
+        land = unary_union([land_polys[i] for i in idx])
+        out = g.intersection(land)
+        return out if not out.is_empty else g
     korea = [g for lvl, p, g in feats
              if lvl == "2" and (p.get("ISO3166-1") == "KR"
                                 or p.get("ISO3166-1:alpha2") == "KR")]
@@ -73,10 +100,17 @@ def main(src, out_dir):
 
     metro_suffix = ("특별시", "광역시", "특별자치시")
     cities = []
-    unmatched_provinces = []
+    metros = [(p, g) for p, g in lvl4
+              if (p.get("name:ko") or p.get("name", "")).endswith(metro_suffix)]
+    metro_ids = {id(g) for _, g in metros}
+    others = [(p, g) for p, g in lvl4 if id(g) not in metro_ids]
 
     def add_city(p, g, province, kind):
-        cells = len(h3.geo_to_cells(g.__geo_interface__, RES))
+        g = clip_to_land(g)
+        cells = h3.geo_to_cells(g.__geo_interface__, RES)
+        sample = list(cells)[:3000]
+        mean_km2 = (sum(h3.cell_area(c, "km^2") for c in sample) / len(sample)
+                    if sample else 0)
         simple = g.simplify(SIMPLIFY_DEG, preserve_topology=True)
         cities.append({
             "type": "Feature",
@@ -86,26 +120,32 @@ def main(src, out_dir):
                 "name_en": p.get("name:en"),
                 "province": province,
                 "kind": kind,
-                "cells": cells,
+                "cells": len(cells),
+                "area_km2": round(len(cells) * mean_km2, 2),
             },
             "geometry": round_coords(mapping(simple)),
         })
 
-    for p4, g4 in lvl4:
-        pname = p4.get("name:ko") or p4.get("name", "")
-        if pname.endswith(metro_suffix):
-            add_city(p4, g4, pname, "metro")
+    for p4, g4 in metros:
+        add_city(p4, g4, p4.get("name:ko") or p4.get("name"), "metro")
+
+    # 도 지역의 시·군: 도 경계가 없거나 깨져 있어도 빠지지 않도록
+    # 시·군(6단계)을 직접 찾고, 도 이름은 포함하는 도 경계에서 가져온다.
+    orphans = []
+    for p6, g6 in lvl6:
+        n6 = p6.get("name:ko") or p6.get("name", "")
+        if not (n6.endswith("시") or n6.endswith("군")):
             continue
-        found = 0
-        for p6, g6 in lvl6:
-            n6 = p6.get("name:ko") or p6.get("name", "")
-            if not (n6.endswith("시") or n6.endswith("군")):
-                continue
-            if g4.contains(g6.representative_point()):
-                add_city(p6, g6, pname, "city" if n6.endswith("시") else "county")
-                found += 1
-        if found == 0:
-            unmatched_provinces.append(pname)
+        pt = g6.representative_point()
+        if any(gm.contains(pt) for _, gm in metros):
+            continue  # 광역시 안의 군·구는 광역시에 포함
+        province = next((p4.get("name:ko") or p4.get("name")
+                         for p4, g4 in others if g4.contains(pt)), None)
+        if province is None:
+            province = p6.get("is_in:province") or ""
+            orphans.append(n6)
+        add_city(p6, g6, province, "city" if n6.endswith("시") else "county")
+    unmatched_provinces = orphans
 
     cities.sort(key=lambda c: (c["properties"]["province"], c["properties"]["name"]))
     fc = {
@@ -119,20 +159,20 @@ def main(src, out_dir):
     with gzip.open(f"{out_dir}/KR.cities.geojson.gz", "wb", compresslevel=9) as f:
         f.write(raw)
 
-    cell_km2 = h3.average_hexagon_area(RES, unit="km^2")
     by_name = {c["properties"]["name"]: c["properties"] for c in cities}
     samples = {}
     for n in ["서울특별시", "부산광역시", "순천시", "광양시", "목포시", "해남군",
-              "제주시", "서귀포시", "수원시", "세종특별자치시"]:
+              "제주시", "서귀포시", "수원시", "세종특별자치시", "신안군", "울릉군"]:
         if n in by_name:
-            samples[n] = round(by_name[n]["cells"] * cell_km2, 1)
+            samples[n] = by_name[n]["area_km2"]
     summary = {
         "provinces": len(lvl4),
         "cities": len(cities),
         "metro": sum(1 for c in cities if c["properties"]["kind"] == "metro"),
         "city": sum(1 for c in cities if c["properties"]["kind"] == "city"),
         "county": sum(1 for c in cities if c["properties"]["kind"] == "county"),
-        "unmatched_provinces": unmatched_provinces,
+        "province_names": sorted({p.get("name:ko") or p.get("name") for p, _ in lvl4}),
+        "cities_without_province": unmatched_provinces,
         "approx_km2": samples,
         "total_cells": sum(c["properties"]["cells"] for c in cities),
         "gz_bytes": None,
@@ -146,4 +186,4 @@ def main(src, out_dir):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], sys.argv[3])

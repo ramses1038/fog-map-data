@@ -22,11 +22,18 @@ jobs:
       - name: 도구 설치
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq osmium-tool
+          sudo apt-get install -y -qq osmium-tool gdal-bin
           pip install --quiet shapely h3
 
       - name: 오픈스트리트맵 한국 자료 내려받기
         run: curl -sSL -o kr.osm.pbf https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
+
+      - name: 육지 도형 내려받기 (바다 제외용)
+        run: |
+          curl -sSL -o land.zip https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip
+          unzip -q land.zip
+          ogr2ogr -f GeoJSONSeq land.geojsonseq land-polygons-split-4326/land_polygons.shp \
+            -spat 124 32.5 132 39
 
       - name: 행정 경계 뽑기
         run: |
@@ -37,7 +44,7 @@ jobs:
       - name: 도시 데이터 만들기
         run: |
           mkdir -p out
-          python scripts/build_kr.py adm.geojsonseq out | tee out/log.txt
+          python scripts/build_kr.py adm.geojsonseq land.geojsonseq out | tee out/log.txt
           echo "::notice title=summary::$(cat out/KR.summary.json | tr -d '\n')"
 
       - name: Release 업로드
