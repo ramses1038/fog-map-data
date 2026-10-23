@@ -50,6 +50,10 @@ def lines_of(geom):
         return [geom["coordinates"]]
     if t == "MultiLineString":
         return geom["coordinates"]
+    if t == "Polygon":
+        return geom["coordinates"][:1]
+    if t == "MultiPolygon":
+        return [poly[0] for poly in geom["coordinates"]]
     return []
 
 
@@ -123,6 +127,51 @@ def build_rail(path):
     return nodes, edges
 
 
+def snap_stations(stations, nodes, edges, max_m=300):
+    """역을 가장 가까운 선로 점에 붙이고, 그 점에서 선로를 잘라 갈림길(노드)로 만든다.
+    (갈림길만 노드로 두면 역 대부분이 노드에서 멀어 경로를 찾을 수 없음)"""
+    grid = defaultdict(list)  # 칸 → (edge 번호, 점 번호)
+    for ei, e in enumerate(edges):
+        for vi, (lat, lon) in enumerate(e[3]):
+            grid[(int(lon / 0.005), int(lat / 0.005))].append((ei, vi))
+    splits = defaultdict(set)  # edge → 자를 점 번호들
+    target = []
+    for st in stations:
+        best, bd = None, max_m
+        gx, gy = int(st["lon"] / 0.005), int(st["lat"] / 0.005)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for ei, vi in grid.get((gx + dx, gy + dy), ()):
+                    lat, lon = edges[ei][3][vi]
+                    d = meters((st["lon"], st["lat"]), (lon, lat))
+                    if d < bd:
+                        best, bd = (ei, vi), d
+        target.append(best)
+        if best and 0 < best[1] < len(edges[best[0]][3]) - 1:
+            splits[best[0]].add(best[1])
+    # 선로 자르기
+    vertex_node = {}  # (edge, 점) → 노드
+    new_edges = []
+    for ei, (u, v, _, coords) in enumerate(edges):
+        cuts = sorted(splits.get(ei, ()))
+        idx = [0] + cuts + [len(coords) - 1]
+        ids = [u]
+        for c in cuts:
+            nodes.append(coords[c])
+            ids.append(len(nodes) - 1)
+            vertex_node[(ei, c)] = len(nodes) - 1
+        ids.append(v)
+        vertex_node[(ei, 0)] = u
+        vertex_node[(ei, len(coords) - 1)] = v
+        for k in range(len(idx) - 1):
+            part = coords[idx[k]:idx[k + 1] + 1]
+            new_edges.append([ids[k], ids[k + 1],
+                              round(length([(x, y) for y, x in part])), part])
+    for st, t in zip(stations, target):
+        st["node"] = vertex_node.get(t) if t else None
+    return new_edges
+
+
 def nearest_node(nodes, grid, lat, lon, max_m=400):
     best, bd = None, max_m
     gx, gy = int(lon / 0.01), int(lat / 0.01)
@@ -189,11 +238,26 @@ def build_tunnels(path):
 
 # ---------------- 지하 보행 통로 ----------------
 
+DIAG = {"부산 서면": (35.1577, 129.0592), "대구 반월당": (35.8655, 128.5935),
+        "강남역": (37.4979, 127.0276), "잠실": (37.5133, 127.1001)}
+diag = defaultdict(lambda: defaultdict(int))
+
+
 def build_under(path):
     out = []
     for ft in read(path):
         p = ft.get("properties", {})
-        if p.get("highway") not in WALK or not underground(p):
+        under = underground(p)
+        if under:  # 진단: 지하상가 지역의 지하 선들이 어떤 태그인지
+            for name, (lat, lon) in DIAG.items():
+                c0 = lines_of(ft["geometry"])
+                if c0 and meters((lon, lat), c0[0][0]) < 600:
+                    key = "|".join(f"{k}={p.get(k)}" for k in
+                                   ("highway", "indoor", "railway", "building", "area")
+                                   if p.get(k))
+                    diag[name][key or "(태그 없음)"] += 1
+        walk = p.get("highway") in WALK or p.get("indoor") in ("corridor", "area")
+        if not walk or not under:
             continue
         if p.get("access") in ("private", "no"):
             continue
@@ -217,6 +281,7 @@ def main(rail_p, st_p, tun_p, under_p, out_dir):
     nodes, edges = build_rail(rail_p)
     print(f"rail nodes {len(nodes)} edges {len(edges)}", flush=True)
     stations = build_stations(st_p, nodes)
+    edges = snap_stations(stations, nodes, edges)
     tunnels = build_tunnels(tun_p)
     under = build_under(under_p)
     data = {"v": 1, "country": "KR", "attribution": "© OpenStreetMap contributors (ODbL)",
@@ -248,6 +313,8 @@ def main(rail_p, st_p, tun_p, under_p, out_dir):
         "under_ways": len(under),
         "under_km": round(sum(length([(x, y) for y, x in c]) for c in under) / 1000, 1),
         "under_m_near": {k: under_m_near(*v) for k, v in CHECK.items()},
+        "diag_underground_tags": {k: dict(sorted(v.items(), key=lambda x: -x[1])[:12])
+                                  for k, v in diag.items()},
         "gz_bytes": None,
         "raw_bytes": len(raw),
     }

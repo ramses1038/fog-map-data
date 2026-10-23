@@ -36,8 +36,8 @@ jobs:
           ex st.osm.pbf point stations.geojsonseq
           osmium tags-filter kr.osm.pbf w/tunnel -o tun.osm.pbf --overwrite
           ex tun.osm.pbf linestring tunnels.geojsonseq
-          osmium tags-filter kr.osm.pbf w/highway=footway,corridor,pedestrian,steps,path -o walk.osm.pbf --overwrite
-          ex walk.osm.pbf linestring under.geojsonseq
+          osmium tags-filter kr.osm.pbf w/highway w/indoor w/level w/layer -o walk.osm.pbf --overwrite
+          ex walk.osm.pbf linestring,polygon under.geojsonseq
 
       - name: 이동 보정 자료 만들기
         run: |
