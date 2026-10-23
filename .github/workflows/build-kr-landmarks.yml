@@ -34,7 +34,7 @@ jobs:
 
       - name: 위키백과 태그 장소·길 뽑기
         run: |
-          osmium tags-filter kr.osm.pbf nwr/wikipedia nwr/wikipedia:ko -o wiki.osm.pbf --overwrite
+          osmium tags-filter kr.osm.pbf nwr/wikipedia nwr/wikipedia:ko nwr/wikidata -o wiki.osm.pbf --overwrite
           osmium export wiki.osm.pbf --geometry-types=point,linestring,polygon \
             -f geojsonseq -o wiki.geojsonseq --overwrite
           osmium tags-filter kr.osm.pbf w/highway -o roads.osm.pbf --overwrite

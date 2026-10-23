@@ -38,6 +38,9 @@ AREA_MAX_KM2 = 30  # 이보다 넓은 면(국립공원 등)은 명소로 쓰지 
 
 def category(p):
     t, h = p.get("tourism"), p.get("historic")
+    # 길·철로 자체(○○로, 철교 구간 등)는 명소가 아님. 다리는 man_made=bridge 로만.
+    if (p.get("highway") or p.get("railway")) and p.get("man_made") != "bridge":
+        return None
     if p.get("natural") == "peak":
         return "peak"
     if p.get("natural") == "beach":
@@ -55,18 +58,44 @@ def category(p):
         return "heritage"
     if p.get("leisure") in ("park", "garden", "nature_reserve") or p.get("boundary") == "national_park":
         return "park"
-    if p.get("man_made") in ("bridge", "tower", "lighthouse") or p.get("bridge") == "yes" and p.get("name"):
+    if p.get("man_made") in ("bridge", "tower", "lighthouse"):
         return "structure"
-    if p.get("building") and t:
-        return "attraction"
     return None
 
 
-def ko_title(p):
+def ko_title(p, qmap):
     w = p.get("wikipedia") or ""
     if w.startswith("ko:"):
         return w[3:].strip()
-    return (p.get("wikipedia:ko") or "").strip() or None
+    t = (p.get("wikipedia:ko") or "").strip()
+    if t:
+        return t
+    # 위키데이터 번호만 있으면 한국어 위키백과 문서 이름으로 바꾼다
+    q = (p.get("wikidata") or "").strip()
+    return qmap.get(q)
+
+
+def wikidata_ko_titles(qids):
+    """위키데이터 번호 → 한국어 위키백과 문서 이름 (50개씩 묻는다)."""
+    out = {}
+    qids = sorted(q for q in qids if q.startswith("Q"))
+    for i in range(0, len(qids), 50):
+        part = "|".join(qids[i:i + 50])
+        url = ("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json"
+               f"&props=sitelinks&sitefilter=kowiki&ids={part}")
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    ents = json.load(r).get("entities", {})
+                for q, e in ents.items():
+                    t = (e.get("sitelinks") or {}).get("kowiki", {}).get("title")
+                    if t:
+                        out[q] = t
+                break
+            except Exception:
+                time.sleep(1 + attempt * 2)
+    return out
 
 
 def read(path):
@@ -100,10 +129,18 @@ def views(title, start, end):
 
 def main(wiki_p, roads_p, cities_p, out_dir, start, end):
     # 1) 후보
+    qids = set()
+    for ft in read(wiki_p):
+        p = ft.get("properties", {})
+        if p.get("wikidata") and category(p):
+            qids.add(p["wikidata"].strip())
+    qmap = wikidata_ko_titles(qids)
+    print(f"wikidata ids {len(qids)} -> kowiki {len(qmap)}", flush=True)
     cands = {}
     for ft in read(wiki_p):
         p = ft.get("properties", {})
-        title, cat = ko_title(p), category(p)
+        cat = category(p)
+        title = ko_title(p, qmap) if cat else None
         if not title or not cat:
             continue
         try:
