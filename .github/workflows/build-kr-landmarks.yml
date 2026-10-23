@@ -1,0 +1,55 @@
+# 도시별 명소(위키백과 조회수 순)를 골라 Release(kr-v2)에 더한다.
+name: build-kr-landmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_landmarks.py'
+      - '.github/workflows/build-kr-landmarks.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+          pip install --quiet shapely
+
+      - name: 자료 내려받기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sSL -o kr.osm.pbf https://download.geofabrik.de/asia/south-korea-latest.osm.pbf
+          gh release download kr-v2 -p KR.cities.geojson.gz --clobber
+
+      - name: 위키백과 태그 장소·길 뽑기
+        run: |
+          osmium tags-filter kr.osm.pbf nwr/wikipedia nwr/wikipedia:ko -o wiki.osm.pbf --overwrite
+          osmium export wiki.osm.pbf --geometry-types=point,linestring,polygon \
+            -f geojsonseq -o wiki.geojsonseq --overwrite
+          osmium tags-filter kr.osm.pbf w/highway -o roads.osm.pbf --overwrite
+          osmium export roads.osm.pbf --geometry-types=linestring \
+            -f geojsonseq -o roads.geojsonseq --overwrite
+
+      - name: 명소 고르기
+        run: |
+          mkdir -p out
+          START=$(date -u -d "$(date -u +%Y-%m-01) -12 months" +%Y%m%d00)
+          END=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y%m%d00)
+          python scripts/build_landmarks.py wiki.geojsonseq roads.geojsonseq KR.cities.geojson.gz out $START $END | tee log.txt
+          echo "::notice title=landmarks::$(tail -n 1 log.txt)"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload kr-v2 out/KR.landmarks.json.gz out/KR.landmarks.summary.json --clobber
