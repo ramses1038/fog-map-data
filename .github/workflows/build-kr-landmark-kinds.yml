@@ -1,0 +1,41 @@
+# 명소 자료(kr-v2)에 아이콘 분류(kind, 13가지)만 다시 붙여 올린다. 몇 분이면 끝남.
+# 명소를 새로 고르지 않고, 분류 규칙(landmark_kinds.py)만 바꿨을 때 쓴다.
+name: build-kr-landmark-kinds
+
+on:
+  workflow_dispatch:
+  # 명소를 새로 고른 뒤(build-kr-landmarks)에도 자동으로 분류를 붙인다
+  workflow_run:
+    workflows: [build-kr-landmarks]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/landmark_kinds.py'
+      - 'scripts/add_landmark_kinds.py'
+      - '.github/workflows/build-kr-landmark-kinds.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 지금 명소 자료 받기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download kr-v2 -p KR.landmarks.json.gz --clobber
+
+      - name: 분류 붙이기
+        run: |
+          python scripts/add_landmark_kinds.py KR.landmarks.json.gz out | tee log.txt
+          echo "::notice title=landmark kinds::$(tail -n 1 log.txt)"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload kr-v2 out/KR.landmarks.json.gz --clobber
