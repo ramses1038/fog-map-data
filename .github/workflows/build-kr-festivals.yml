@@ -1,0 +1,36 @@
+# 한국 축제 목록(진행 중·곧 시작)을 매주 받아 Release(kr-v2)에 올린다.
+# 사용 키는 저장소 비밀 설정 TOUR_API_KEY (공개되지 않음).
+name: build-kr-festivals
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 18 * * 0'   # 매주 월요일 새벽 3시 17분 (한국 시간)
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_festivals.py'
+      - '.github/workflows/build-kr-festivals.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 축제 목록 받기
+        env:
+          TOUR_API_KEY: ${{ secrets.TOUR_API_KEY }}
+        run: |
+          mkdir -p out
+          python scripts/build_festivals.py out | tee log.txt
+          echo "::notice title=festivals::$(tail -n 1 log.txt)"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload kr-v2 out/KR.festivals.json.gz out/KR.festivals.summary.json --clobber
