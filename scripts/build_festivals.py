@@ -94,7 +94,10 @@ def main(out_dir):
 
     limit = today + dt.timedelta(days=365)
     out, seen = [], set()
+    dropped = {"long": 0, "not_festival": 0}
+    cats = {}
     for r in rows:
+        cats[f'{r.get("cat2")}/{r.get("lclsSystm2")}'] = cats.get(f'{r.get("cat2")}/{r.get("lclsSystm2")}', 0) + 1
         try:
             s = dt.datetime.strptime(str(r.get("eventstartdate")), "%Y%m%d").date()
             e = dt.datetime.strptime(str(r.get("eventenddate")), "%Y%m%d").date()
@@ -102,6 +105,14 @@ def main(out_dir):
         except (TypeError, ValueError):
             continue
         if e < today or s > limit or not (33 < lat < 39 and 124 < lon < 132):
+            continue
+        # 축제만: 관광공사 분류 '축제'(A0207). 공연·전시·포럼 등 '공연/행사'(A0208)는 뺀다
+        if r.get("cat2") != "A0207" and not str(r.get("lclsSystm2") or "").startswith("EV01"):
+            dropped["not_festival"] += 1
+            continue
+        # 60일 넘게 하는 상설 행사는 뺀다 (아이디어로 보관: 기획 문서)
+        if (e - s).days > 60:
+            dropped["long"] += 1
             continue
         cid = str(r.get("contentid"))
         if cid in seen:
@@ -134,7 +145,8 @@ def main(out_dir):
         "raw_bytes": len(raw),
         "sample_ongoing": [f'{f["name"]} ({f["start"]}~{f["end"]}, {f["addr"][:12]})' for f in ongoing[:8]],
         "sample_upcoming": [f'{f["name"]} ({f["start"]}~{f["end"]})' for f in out if f not in ongoing][:8],
-        "fields": sorted(rows[0].keys()) if rows else [],
+        "dropped": dropped,
+        "categories": dict(sorted(cats.items(), key=lambda x: -x[1])[:12]),
     }
     with open(f"{out_dir}/KR.festivals.summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
