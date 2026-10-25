@@ -50,16 +50,31 @@ jobs:
           osmium tags-filter src.osm.pbf r/boundary=administrative -o adm.osm.pbf --overwrite
           osmium export adm.osm.pbf --geometry-types=polygon -a type,id -f geojsonseq -o adm.geojsonseq --overwrite
 
-      - name: 도시 데이터 만들기
-        run: |
-          python scripts/build_country.py adm.geojsonseq land.geojsonseq extra.geojsonseq ${{ matrix.code }} out | tee log.txt
-          echo "::notice title=${{ matrix.code }} summary::$(tail -n 1 log.txt | cut -c1-3000)"
-
-      - name: Release 업로드
+      - name: Release 준비
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view ${{ matrix.tag }} >/dev/null 2>&1 || \
             gh release create ${{ matrix.tag }} --title "${{ matrix.title }}" \
               --notes "오픈스트리트맵 자료로 만든 도시 경계 (대도시는 1개로 묶음). © OpenStreetMap contributors (ODbL)"
-          gh release upload ${{ matrix.tag }} out/${{ matrix.code }}.cities.geojson.gz out/${{ matrix.code }}.summary.json --clobber
+
+      - name: 도시 데이터 만들기
+        run: |
+          set -o pipefail
+          python scripts/build_country.py adm.geojsonseq land.geojsonseq extra.geojsonseq ${{ matrix.code }} out 2>&1 | tee build.log.txt
+          echo "::notice title=${{ matrix.code }} summary::$(tail -n 1 build.log.txt | cut -c1-3000)"
+
+      # 실패해도 기록은 남겨서 원인을 볼 수 있게
+      - name: 기록 올리기
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build.log.txt ${{ matrix.code }}.build.log.txt 2>/dev/null || echo "no log" > ${{ matrix.code }}.build.log.txt
+          free -m >> ${{ matrix.code }}.build.log.txt
+          gh release upload ${{ matrix.tag }} ${{ matrix.code }}.build.log.txt --clobber
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ matrix.tag }} out/${{ matrix.code }}.cities.geojson.gz out/${{ matrix.code }}.summary.json --clobber

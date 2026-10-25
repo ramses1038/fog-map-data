@@ -153,6 +153,17 @@ def round_coords(obj, nd=5):
     return obj
 
 
+def polygonal(g):
+    """면 부분만 (자르면 선·점이 섞인 묶음이 나올 수 있음)."""
+    if g.is_empty:
+        return g
+    if g.geom_type in ("Polygon", "MultiPolygon"):
+        return g
+    parts = [q for q in getattr(g, "geoms", [])
+             if q.geom_type in ("Polygon", "MultiPolygon") and not q.is_empty]
+    return unary_union(parts) if parts else Polygon()
+
+
 def area_km2(g):
     a, _ = GEOD.geometry_area_perimeter(g)
     return abs(a) / 1e6
@@ -211,10 +222,21 @@ def main(adm_path, land_path, extra_path, code, out_dir):
                 return ko(p4)
         return ""
 
-    cities, notes = [], {"metros": {}, "whole_states": [], "remainders": []}
+    cities, notes = [], {"metros": {}, "whole_states": [], "remainders": [], "errors": []}
 
     def add_city(osm_id, name, name_en, g, province, kind):
-        g = clip_to_land(g)
+        try:
+            _add_city(osm_id, name, name_en, g, province, kind)
+        except Exception as e:  # 한 도시가 잘못돼도 나머지는 만든다
+            print(f"  ! {name}: {type(e).__name__}: {e}", flush=True)
+            notes["errors"].append(f"{name}: {type(e).__name__}: {str(e)[:120]}")
+
+    def _add_city(osm_id, name, name_en, g, province, kind):
+        g = polygonal(g)
+        clipped = polygonal(clip_to_land(g))
+        g = clipped if not clipped.is_empty else g
+        if g.is_empty:
+            raise ValueError("빈 도형")
         km2 = area_km2(g)
         if km2 <= EXACT_MAX_KM2:
             cells = len(h3.geo_to_cells(g.__geo_interface__, RES))
@@ -272,7 +294,11 @@ def main(adm_path, land_path, extra_path, code, out_dir):
                      "Canberra" if name == "캔버라" else en(p4), g4, ko(p4), "metro")
             notes["whole_states"].append(en(p4))
             continue
-        rest = g4.difference(unary_union(inner)).buffer(0)
+        try:
+            rest = polygonal(g4.difference(unary_union(inner)).buffer(0))
+        except Exception as e:
+            notes["errors"].append(f"{en(p4)} 미편입 계산: {e}")
+            continue
         if rest.is_empty:
             continue
         km2 = area_km2(rest)
@@ -303,6 +329,7 @@ def main(adm_path, land_path, extra_path, code, out_dir):
         "metros": notes["metros"],
         "whole_states": notes["whole_states"],
         "remainders": notes["remainders"],
+        "errors": notes["errors"],
         "coast_open_chains": open_chains,
         "raw_bytes": len(raw),
         "gz_bytes": os.path.getsize(out),
