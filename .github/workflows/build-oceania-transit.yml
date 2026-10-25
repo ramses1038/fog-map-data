@@ -1,0 +1,57 @@
+# 호주·뉴질랜드 이동 보정 자료(철도망·역·터널·지하 통로)를 나라별 Release에 올린다.
+name: build-oceania-transit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - code: AU
+            tag: au-v1
+            pbf: https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf
+          - code: NZ
+            tag: nz-v1
+            pbf: https://download.geofabrik.de/australia-oceania/new-zealand-latest.osm.pbf
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+
+      - name: 자료 내려받기
+        run: curl -sSL -o src.osm.pbf ${{ matrix.pbf }}
+
+      - name: 철도·역·터널·지하 통로 뽑기
+        run: |
+          ex() { osmium export "$1" --geometry-types="$2" -a type,id -f geojsonseq -o "$3" --overwrite; }
+          osmium tags-filter src.osm.pbf w/railway -o rail.osm.pbf --overwrite
+          ex rail.osm.pbf linestring rail.geojsonseq
+          osmium tags-filter src.osm.pbf n/railway=station,halt n/public_transport=station -o st.osm.pbf --overwrite
+          ex st.osm.pbf point stations.geojsonseq
+          osmium tags-filter src.osm.pbf w/tunnel -o tun.osm.pbf --overwrite
+          ex tun.osm.pbf linestring tunnels.geojsonseq
+          osmium tags-filter src.osm.pbf w/highway w/indoor w/level w/layer -o walk.osm.pbf --overwrite
+          ex walk.osm.pbf linestring,polygon under.geojsonseq
+
+      - name: 이동 보정 자료 만들기
+        run: |
+          set -o pipefail
+          mkdir -p out
+          python scripts/build_transit.py rail.geojsonseq stations.geojsonseq tunnels.geojsonseq under.geojsonseq out ${{ matrix.code }} 2>&1 | tee log.txt
+          echo "::notice title=${{ matrix.code }} transit::$(tail -n 1 log.txt | cut -c1-2000)"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ matrix.tag }} out/${{ matrix.code }}.transit.json.gz out/${{ matrix.code }}.transit.summary.json --clobber

@@ -279,18 +279,18 @@ CHECK = {  # 지하상가가 얼마나 그려졌는지 볼 곳 (반경 600m)
 }
 
 
-def main(rail_p, st_p, tun_p, under_p, out_dir):
+def main(rail_p, st_p, tun_p, under_p, out_dir, code="KR"):
     nodes, edges = build_rail(rail_p)
     print(f"rail nodes {len(nodes)} edges {len(edges)}", flush=True)
     stations = build_stations(st_p, nodes)
     edges = snap_stations(stations, nodes, edges)
     tunnels = build_tunnels(tun_p)
     under = build_under(under_p)
-    data = {"v": 1, "country": "KR", "attribution": "© OpenStreetMap contributors (ODbL)",
+    data = {"v": 1, "country": code, "attribution": "© OpenStreetMap contributors (ODbL)",
             "rail": {"nodes": nodes, "edges": edges}, "stations": stations,
             "tunnels": tunnels, "under": under}
     raw = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
-    with gzip.open(f"{out_dir}/KR.transit.json.gz", "wb", compresslevel=9) as f:
+    with gzip.open(f"{out_dir}/{code}.transit.json.gz", "wb", compresslevel=9) as f:
         f.write(raw)
 
     def under_m_near(lat, lon, r=600):
@@ -321,11 +321,11 @@ def main(rail_p, st_p, tun_p, under_p, out_dir):
         "raw_bytes": len(raw),
     }
     import os
-    summary["gz_bytes"] = os.path.getsize(f"{out_dir}/KR.transit.json.gz")
-    with open(f"{out_dir}/KR.transit.summary.json", "w", encoding="utf-8") as f:
+    summary["gz_bytes"] = os.path.getsize(f"{out_dir}/{code}.transit.json.gz")
+    with open(f"{out_dir}/{code}.transit.summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
     print(json.dumps(summary, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:6])
+    main(*sys.argv[1:7])
