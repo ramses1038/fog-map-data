@@ -67,4 +67,14 @@ jobs:
       - name: Release 업로드
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload ${{ matrix.tag }} out/* --clobber
+        # 파일이 수백 개라 가끔 실패한다 → 50개씩 올리고, 실패하면 하나씩 다시
+        run: |
+          ls out/* | split -l 50 - batch_
+          for b in batch_*; do
+            gh release upload ${{ matrix.tag }} $(cat $b) --clobber && continue
+            for f in $(cat $b); do
+              for i in 1 2 3 4; do gh release upload ${{ matrix.tag }} "$f" --clobber && break; sleep $((i * 5)); done
+            done
+          done
+          n=$(gh api repos/${{ github.repository }}/releases/tags/${{ matrix.tag }} --paginate -q '[.assets[] | select(.name|endswith(".roads.gz"))] | length')
+          echo "::notice title=${{ matrix.code }} uploaded::roads files $n / $(ls out/*.roads.gz | wc -l)"
