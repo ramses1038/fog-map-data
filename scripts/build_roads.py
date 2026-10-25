@@ -1,7 +1,7 @@
 """도시별 '길 칸' 목록 만들기 (길 탐험률의 분모).
 
 입력: roads.geojsonseq (osmium으로 뽑은 길·철도 선), KR.cities.geojson.gz (도시 경계)
-출력: out/KR-<id>.roads.gz  도시 하나의 길 칸 목록
+출력: out/<나라>-<id>.roads.gz  도시 하나의 길 칸 목록 (한국·호주·뉴질랜드 공통)
          (H3 해상도 11 칸 번호를 정렬해 앞 칸과의 차이를 8바이트씩 적고 gzip)
       out/KR.roads.json      도시마다 길 칸 수
 
@@ -113,7 +113,8 @@ def main(roads_path, cities_path, out_dir):
         counts[cid] = len(ids)
         print(f"  {i + 1}/{len(fc['features'])} {f['properties']['name']}: "
               f"{len(ids)} road cells", flush=True)
-    with open(f"{out_dir}/KR.roads.json", "w", encoding="utf-8") as w:
+    code = fc.get("country", "KR")
+    with open(f"{out_dir}/{code}.roads.json", "w", encoding="utf-8") as w:
         json.dump({"res": RES, "format": "uint64-delta-le-gzip", "cities": counts}, w)
     by_name = {f["properties"]["name"]: counts[f["properties"]["id"]] for f in fc["features"]}
     sample = {n: by_name.get(n) for n in ["서울특별시", "광양시", "순천시", "신안군", "울릉군"]}
