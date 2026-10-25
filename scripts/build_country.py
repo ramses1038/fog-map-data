@@ -28,22 +28,23 @@ from shapely.ops import clip_by_rect, linemerge, unary_union
 RES = 11
 GEOD = Geod(ellps="WGS84")
 EXACT_MAX_KM2 = 1500  # 이보다 넓으면 칸을 하나하나 세지 않고 면적으로 어림
-REMAINDER_MIN_KM2 = 50
+REMAINDER_MIN_KM2 = 50  # 땅만 따져서 (주 경계는 바다까지 포함하므로)
+TINY_KM2 = 5  # 대도시 밖에서 이보다 작은 '구역'은 잘못 붙은 표시(부두·섬 등)로 보고 뺀다
 
 # 대도시: 중심 (위도, 경도), 반경 km, 한글 이름, 영어 이름
 METROS = {
     "AU": [
         ((-33.8688, 151.2093), 50, "시드니", "Sydney"),
         ((-37.8136, 144.9631), 45, "멜버른", "Melbourne"),
-        ((-27.4698, 153.0251), 35, "브리즈번", "Brisbane"),
+        ((-27.4698, 153.0251), 45, "브리즈번", "Brisbane"),  # 입스위치·모어턴베이 포함
         ((-31.9523, 115.8613), 40, "퍼스", "Perth"),
         ((-34.9285, 138.6007), 30, "애들레이드", "Adelaide"),
         ((-42.8821, 147.3272), 20, "호바트", "Hobart"),
-        ((-12.4634, 130.8456), 15, "다윈", "Darwin"),
+        ((-12.4634, 130.8456), 22, "다윈", "Darwin"),  # 파머스턴 포함
     ],
     "NZ": [
         # 웰링턴 광역(웰링턴·로어헛·어퍼헛·포리루아)
-        ((-41.2865, 174.7762), 20, "웰링턴", "Wellington"),
+        ((-41.2865, 174.7762), 30, "웰링턴", "Wellington"),
     ],
 }
 
@@ -224,17 +225,17 @@ def main(adm_path, land_path, extra_path, code, out_dir):
 
     cities, notes = [], {"metros": {}, "whole_states": [], "remainders": [], "errors": []}
 
-    def add_city(osm_id, name, name_en, g, province, kind):
+    def add_city(osm_id, name, name_en, g, province, kind, land_only=False):
         try:
-            _add_city(osm_id, name, name_en, g, province, kind)
+            _add_city(osm_id, name, name_en, g, province, kind, land_only)
         except Exception as e:  # 한 도시가 잘못돼도 나머지는 만든다
             print(f"  ! {name}: {type(e).__name__}: {e}", flush=True)
             notes["errors"].append(f"{name}: {type(e).__name__}: {str(e)[:120]}")
 
-    def _add_city(osm_id, name, name_en, g, province, kind):
+    def _add_city(osm_id, name, name_en, g, province, kind, land_only=False):
         g = polygonal(g)
         clipped = polygonal(clip_to_land(g))
-        g = clipped if not clipped.is_empty else g
+        g = clipped if (land_only or not clipped.is_empty) else g
         if g.is_empty:
             raise ValueError("빈 도형")
         km2 = area_km2(g)
@@ -278,9 +279,13 @@ def main(adm_path, land_path, extra_path, code, out_dir):
                  province_of(g), "metro")
         notes["metros"][name_ko] = sorted(en(lvl6[i][0]) for i in members)
 
-    # 2) 나머지 지방 정부 구역
+    # 2) 나머지 지방 정부 구역 (대도시 밖의 아주 작은 '구역'은 잘못 붙은 표시로 보고 뺌)
+    notes["dropped_tiny"] = []
     for i, (p6, g6) in enumerate(lvl6):
         if i in used:
+            continue
+        if area_km2(g6) < TINY_KM2:
+            notes["dropped_tiny"].append(en(p6))
             continue
         add_city(p6.get("@id", p6.get("id", "")), ko(p6), en(p6), g6, province_of(g6),
                  "city" if "City" in en(p6) else "county")
@@ -301,11 +306,14 @@ def main(adm_path, land_path, extra_path, code, out_dir):
             continue
         if rest.is_empty:
             continue
-        km2 = area_km2(rest)
+        land = polygonal(clip_to_land(rest)) if not rest.is_empty else rest
+        if land.is_empty or land.equals(rest) and len(land_tree.query(rest)) == 0:
+            continue  # 땅과 겹치지 않으면 바다
+        km2 = area_km2(land)
         if km2 >= REMAINDER_MIN_KM2:
             add_city(f"rest-{p4.get('@id', p4.get('id', ''))}", f"{ko(p4)} 미편입 지역",
-                     f"{en(p4)} (unincorporated)", rest, ko(p4), "county")
-            notes["remainders"].append(f"{en(p4)}: {km2:.0f} km2")
+                     f"{en(p4)} (unincorporated)", land, ko(p4), "county", land_only=True)
+            notes["remainders"].append(f"{en(p4)}: {km2:.0f} km2 (땅)")
 
     cities.sort(key=lambda c: (c["properties"]["province"], c["properties"]["name"]))
     fc = {
@@ -330,6 +338,7 @@ def main(adm_path, land_path, extra_path, code, out_dir):
         "whole_states": notes["whole_states"],
         "remainders": notes["remainders"],
         "errors": notes["errors"],
+        "dropped_tiny": notes["dropped_tiny"][:40],
         "coast_open_chains": open_chains,
         "raw_bytes": len(raw),
         "gz_bytes": os.path.getsize(out),
