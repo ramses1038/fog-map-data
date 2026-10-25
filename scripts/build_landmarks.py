@@ -233,6 +233,8 @@ def sparql(q):
             print(f"  sparql retry {attempt}: {e.code} retry-after={ra}", flush=True)
             DIAG["errors"].append(f"sparql {e.code}")
             if ra and ra.isdigit():
+                if int(ra) > 300:
+                    break  # 오래 막혔으면 기다리지 않고 넘어간다
                 time.sleep(int(ra))
         except Exception as e:
             print(f"  sparql retry {attempt}: {e}", flush=True)
@@ -292,7 +294,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end, code="KR"):
         if p.get("wikidata") and category(p):
             qids.add(p["wikidata"].strip())
     qmap = wikidata_ko_titles(qids)
-    print(f"wikidata ids {len(qids)} -> kowiki {len(qmap)}", flush=True)
+    print(f"wikidata ids {len(qids)} -> {conf()['lang']}wiki {len(qmap)}", flush=True)
     cands = {}
     for ft in read(wiki_p):
         p = ft.get("properties", {})
@@ -322,7 +324,9 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end, code="KR"):
                             "ele": p.get("ele"), "qid": (p.get("wikidata") or "").strip()}
     print(f"candidates from OSM: {len(cands)}", flush=True)
     # 위키데이터 후보 더하기 (같은 문서가 OSM에 면으로 있으면 OSM 쪽을 씀)
-    for title, c in wikidata_candidates().items():
+    # 위키데이터 직접 질의는 오픈스트리트맵에 위키 태그가 드문 한국에서만.
+    # (호주·뉴질랜드는 오픈스트리트맵 후보가 충분하고, 깃허브 서버에서 질의가 자주 막힘)
+    for title, c in (wikidata_candidates() if CC == "KR" else {}).items():
         if title not in cands:
             cands[title] = c
     print(f"candidates total: {len(cands)}", flush=True)
