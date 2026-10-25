@@ -290,6 +290,8 @@ def main(adm_path, land_path, extra_path, code, out_dir):
         add_city(p6.get("@id", p6.get("id", "")), ko(p6), en(p6), g6, province_of(g6),
                  "city" if "City" in en(p6) else "county")
 
+    lvl6_tree = STRtree([g for _, g in lvl6])
+
     # 3) 아래 구역이 없는 주 → 통째로, 구역 밖 땅이 넓으면 '미편입 지역'
     for p4, g4 in lvl4:
         inner = [g6 for p6, g6 in lvl6 if g4.contains(g6.representative_point())]
@@ -300,7 +302,9 @@ def main(adm_path, land_path, extra_path, code, out_dir):
             notes["whole_states"].append(en(p4))
             continue
         try:
-            rest = polygonal(g4.difference(unary_union(inner)).buffer(0))
+            # 주 경계에 걸친 구역(두 주에 걸친 구역 포함)을 모두 뺀다
+            touching = [lvl6[i][1] for i in lvl6_tree.query(g4)]
+            rest = polygonal(g4.difference(unary_union(touching)).buffer(0))
         except Exception as e:
             notes["errors"].append(f"{en(p4)} 미편입 계산: {e}")
             continue
