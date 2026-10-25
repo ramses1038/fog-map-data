@@ -40,6 +40,43 @@ def _has(s, *words):
     return any(w in s for w in words)
 
 
+def _english_kind(e, cat):
+    def has(*ws):
+        return any(w in e for w in ws)
+
+    if has("stupa", "pagoda", "buddhist", "monastery") or (has("temple") and cat == "temple"):
+        return "temple"
+    if has(" cave", "caves", "cavern"):
+        return "cave"
+    if has("falls", "waterfall", "gorge", "canyon", "chasm", "cascade"):
+        return "falls"
+    if re.search(r"\bisland\b|\bisle\b", e) and not has("island bay", "museum", "bridge"):
+        return "island"
+    if has("beach", "lake ", " lake", "lagoon", "reservoir", "blowhole", "rock pool",
+           "baths", "glacier", "sound", "hot pools", "thermal"):
+        return "water"
+    if has("museum", "gallery", "theatre", "theater", "opera house", "arts centre",
+           "arts center", "concert hall", "planetarium", "observatory", "library"):
+        return "museum"
+    if has("uluru", "kata tjuta", "mount ", "mt ", " peak", "summit", "range") and cat in (
+            "peak", "attraction", "heritage", "viewpoint", "park"):
+        return "peak"
+    if has(" bridge"):
+        return "bridge"
+    if has("tower", "lookout", "lighthouse", "skywalk", "sky tower", "observation"):
+        return "tower"
+    if has("cathedral", "church", "basilica", "post office", "town hall", "railway station",
+           "arcade", "parliament house", "building", "customs house", "bank"):
+        return "modern"
+    if has("fort ", "fortress", "gaol", "prison", "homestead", "historic", "heritage",
+           "cemetery", "convict", "ruins", "mission", "memorial", "battery", "barracks",
+           "pā", " pa ", "marae", "treaty"):
+        return "history"
+    if has("park", "garden", "botanic", "reserve", "arboretum", "forest"):
+        return "park"
+    return None
+
+
 def kind_of(name, wiki, cat, wd_types=()):
     n = f"{name} {wiki}".replace("(", " ").replace(")", " ")
     first = name.split("(")[0].strip()
@@ -92,6 +129,10 @@ def kind_of(name, wiki, cat, wd_types=()):
         return "history"
     if _has(n, "수목원", "식물원", "정원", "공원", "숲", "원림", "별서", "소쇄원"):
         return "park"
+    # 2-2) 영어 이름 (호주·뉴질랜드 등)
+    k = _english_kind(f"{name} {wiki}".lower(), cat)
+    if k:
+        return k
     # 3) 위키데이터 종류
     low = " ".join(t.lower() for t in wd_types)
     for k, words in WD_HINTS:

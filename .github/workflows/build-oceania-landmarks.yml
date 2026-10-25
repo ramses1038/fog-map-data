@@ -1,0 +1,67 @@
+# 호주·뉴질랜드 도시별 명소(영어 위키백과 문서가 있는 곳, 위키데이터 언어판 수 순)를 골라
+# 나라별 Release에 올린다. 아이콘 분류(kind)도 함께 붙인다.
+name: build-oceania-landmarks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 1   # 위키데이터 질의 제한(1분 1회)을 두 나라가 나눠 쓰지 않게
+      matrix:
+        include:
+          - code: AU
+            tag: au-v1
+            pbf: https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf
+          - code: NZ
+            tag: nz-v1
+            pbf: https://download.geofabrik.de/australia-oceania/new-zealand-latest.osm.pbf
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+          pip install --quiet shapely
+
+      - name: 자료 내려받기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sSL -o src.osm.pbf ${{ matrix.pbf }}
+          gh release download ${{ matrix.tag }} -p ${{ matrix.code }}.cities.geojson.gz --clobber
+
+      - name: 위키 태그 장소·길 뽑기
+        run: |
+          osmium tags-filter src.osm.pbf nwr/wikipedia nwr/wikipedia:en nwr/wikidata -o wiki.osm.pbf --overwrite
+          osmium export wiki.osm.pbf --geometry-types=point,linestring,polygon -f geojsonseq -o wiki.geojsonseq --overwrite
+          osmium tags-filter src.osm.pbf w/highway -o roads.osm.pbf --overwrite
+          osmium export roads.osm.pbf --geometry-types=linestring -f geojsonseq -o roads.geojsonseq --overwrite
+
+      - name: 명소 고르기
+        run: |
+          set -o pipefail
+          mkdir -p out
+          python scripts/build_landmarks.py wiki.geojsonseq roads.geojsonseq ${{ matrix.code }}.cities.geojson.gz out 0 0 ${{ matrix.code }} 2>&1 | tee lm.log.txt
+          echo "::notice title=${{ matrix.code }} landmarks::$(tail -n 1 lm.log.txt | cut -c1-3000)"
+
+      - name: 기록 올리기
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tail -c 30000 lm.log.txt > ${{ matrix.code }}.landmarks.log.txt 2>/dev/null || echo "no log" > ${{ matrix.code }}.landmarks.log.txt
+          gh release upload ${{ matrix.tag }} ${{ matrix.code }}.landmarks.log.txt --clobber
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload ${{ matrix.tag }} out/${{ matrix.code }}.landmarks.json.gz out/${{ matrix.code }}.landmarks.summary.json --clobber

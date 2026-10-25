@@ -22,8 +22,22 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+from landmark_kinds import kind_of  # noqa: E402
 from shapely import STRtree
 from shapely.geometry import Point, mapping, shape
+
+# 나라별: 위키데이터 나라 번호, 후보 문서 언어, 명소를 더 많이 고를 큰 도시(이름 → 개수)
+COUNTRIES = {
+    "KR": {"q": "Q884", "lang": "ko", "special": {"서울특별시": 30}},
+    "AU": {"q": "Q408", "lang": "en", "special": {"시드니": 30, "멜버른": 30}},
+    "NZ": {"q": "Q664", "lang": "en", "special": {"오클랜드": 30}},
+}
+CC = "KR"
+
+
+def conf():
+    return COUNTRIES[CC]
+
 
 UA = "fog-map-data/1.0 (personal exploration app; github.com/ramses1038/fog-map-data)"
 PER_KIND = {"special": 30, "metro": 20, "city": 10, "county": 5}
@@ -64,10 +78,11 @@ def category(p):
 
 
 def ko_title(p, qmap):
+    lang = conf()["lang"]
     w = p.get("wikipedia") or ""
-    if w.startswith("ko:"):
-        return w[3:].strip()
-    t = (p.get("wikipedia:ko") or "").strip()
+    if w.startswith(f"{lang}:"):
+        return w[len(lang) + 1:].strip()
+    t = (p.get(f"wikipedia:{lang}") or "").strip()
     if t:
         return t
     # 위키데이터 번호만 있으면 한국어 위키백과 문서 이름으로 바꾼다
@@ -102,16 +117,38 @@ def wikidata_ko_titles(qids):
     for i in range(0, len(qids), 50):
         part = "|".join(qids[i:i + 50])
         url = ("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json"
-               f"&props=sitelinks&sitefilter=kowiki&ids={part}")
+               f"&props=sitelinks&sitefilter={conf()['lang']}wiki&ids={part}")
         for attempt in range(4):
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": UA})
                 with urllib.request.urlopen(req, timeout=30) as r:
                     ents = json.load(r).get("entities", {})
                 for q, e in ents.items():
-                    t = (e.get("sitelinks") or {}).get("kowiki", {}).get("title")
+                    t = (e.get("sitelinks") or {}).get(f"{conf()['lang']}wiki", {}).get("title")
                     if t:
                         out[q] = t
+                break
+            except Exception:
+                time.sleep(1 + attempt * 2)
+    return out
+
+
+def wikidata_ko_labels(qids):
+    """위키데이터 번호 → 한국어 이름 (해외 명소를 한글로 보여 주려고)."""
+    out = {}
+    qids = sorted(q for q in qids if q and q.startswith("Q"))
+    for i in range(0, len(qids), 50):
+        part = "|".join(qids[i:i + 50])
+        url = ("https://www.wikidata.org/w/api.php?action=wbgetentities&format=json"
+               f"&props=labels&languages=ko&ids={part}")
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    for q, e in json.load(r).get("entities", {}).items():
+                        v = (e.get("labels") or {}).get("ko", {}).get("value")
+                        if v:
+                            out[q] = v
                 break
             except Exception:
                 time.sleep(1 + attempt * 2)
@@ -225,12 +262,14 @@ def wikidata_candidates():
     for q, cat in WD_CLASSES.items():
         rows = sparql(f"""
 SELECT ?item ?title ?coord ?links WHERE {{
-  ?item wdt:P17 wd:Q884; wdt:P625 ?coord; wdt:P31/wdt:P279* wd:{q}; wikibase:sitelinks ?links.
-  ?article schema:about ?item; schema:isPartOf <https://ko.wikipedia.org/>; schema:name ?title.
+  ?item wdt:P17 wd:{conf()['q']}; wdt:P625 ?coord; wdt:P31/wdt:P279* wd:{q}; wikibase:sitelinks ?links.
+  ?article schema:about ?item; schema:isPartOf <https://{conf()['lang']}.wikipedia.org/>; schema:name ?title.
 }}""")
         add(rows, cat)
         DIAG["wd"][q] = len(rows)
         print(f"  wikidata {q} ({cat}): {len(rows)}", flush=True)
+    if CC != "KR":
+        return out
     # 문화재 중 사적·명승 (국보·보물은 옮길 수 있는 유물이 많아 뺌)
     rows = sparql("""
 SELECT ?item ?title ?coord ?links WHERE {
@@ -243,7 +282,9 @@ SELECT ?item ?title ?coord ?links WHERE {
     return out
 
 
-def main(wiki_p, roads_p, cities_p, out_dir, start, end):
+def main(wiki_p, roads_p, cities_p, out_dir, start, end, code="KR"):
+    global CC
+    CC = code
     # 1) 후보
     qids = set()
     for ft in read(wiki_p):
@@ -335,6 +376,14 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
             c["links"] = counts.get(c.get("qid"), 1)  # 한국어 문서는 있으므로 최소 1
         c["views"] = 0
     DIAG["links_fetched"] = len(counts)
+    if CC != "KR":
+        # 해외: 한국어 이름이 있으면 한글로, 없으면 영어 그대로 (영어 이름은 따로 보관)
+        ko = wikidata_ko_labels({c.get("qid") for c in cands.values()})
+        for c in cands.values():
+            c["name_en"] = c["name"]
+            if ko.get(c.get("qid")):
+                c["name"] = ko[c["qid"]]
+        DIAG["ko_names"] = sum(1 for c in cands.values() if c["name"] != c["name_en"])
     print("popularity done", flush=True)
 
     # 5) 도시마다 고르기
@@ -343,8 +392,7 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
         by_city.setdefault(c["city"]["id"], []).append(c)
     out, summary_cities = [], {}
     for props, _ in cities:
-        kind = "special" if props["name"] == "서울특별시" else props["kind"]
-        n = PER_KIND.get(kind, 10)
+        n = conf()["special"].get(props["name"]) or PER_KIND.get(props["kind"], 10)
         # 조회수 순, 조회수를 못 받았으면 위키데이터 언어판 수로
         lst = sorted(by_city.get(props["id"], []), key=lambda c: -c.get("links", 0))
         # 이름이 같은 곳(같은 장소가 문서 두 개로 있는 경우)은 하나만
@@ -365,9 +413,12 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
                 "name": c["name"],
                 "wiki": c["title"],
                 "cat": c["cat"],
+                "kind": kind_of(c.get("name_en") or c["name"], c["title"], c["cat"]),
                 "city": props["id"],
                 "links": c.get("links", 0),
             }
+            if c.get("name_en") and c["name_en"] != c["name"]:
+                item["name_en"] = c["name_en"]
             pt = g.representative_point() if g.geom_type != "Point" else g
             item["lat"], item["lon"] = round(pt.y, 5), round(pt.x, 5)
             if g.geom_type != "Point":
@@ -375,31 +426,35 @@ def main(wiki_p, roads_p, cities_p, out_dir, start, end):
                 item["area"] = json.loads(json.dumps(mapping(simple)))  # GeoJSON 도형
             out.append(item)
 
-    data = {"v": 1, "country": "KR",
+    data = {"v": 1, "country": CC,
             "attribution": "© OpenStreetMap contributors (ODbL), Wikipedia",
             "landmarks": out}
     raw = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
-    with gzip.open(f"{out_dir}/KR.landmarks.json.gz", "wb", compresslevel=9) as f:
+    with gzip.open(f"{out_dir}/{CC}.landmarks.json.gz", "wb", compresslevel=9) as f:
         f.write(raw)
-    cats = {}
+    cats, kinds = {}, {}
     for i in out:
         cats[i["cat"]] = cats.get(i["cat"], 0) + 1
+        kinds[i["kind"]] = kinds.get(i["kind"], 0) + 1
     summary = {
         "landmarks": len(out),
         "by_category": cats,
         "cities_with_fewer": sum(
             1 for props, _ in cities
             if len(summary_cities[props["name"]]) <
-            PER_KIND.get("special" if props["name"] == "서울특별시" else props["kind"], 10)),
+            (conf()["special"].get(props["name"]) or PER_KIND.get(props["kind"], 10))),
         "raw_bytes": len(raw),
         "diag": {**DIAG, "errors": DIAG["errors"][:10], "error_count": len(DIAG["errors"])},
         "samples": {k: summary_cities.get(k) for k in
-                    ["서울특별시", "부산광역시", "광주", "순천시", "광양시", "여수시", "제주시", "울릉군"]},
+                    ["서울특별시", "부산광역시", "광주", "순천시", "광양시", "여수시", "제주시", "울릉군",
+                     "시드니", "멜버른", "브리즈번", "캔버라", "오클랜드", "퀸스타운", "크라이스트처치"]
+                    if k in summary_cities},
+        "by_kind": kinds,
     }
-    with open(f"{out_dir}/KR.landmarks.summary.json", "w", encoding="utf-8") as f:
+    with open(f"{out_dir}/{CC}.landmarks.summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
     print(json.dumps(summary, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:7])
+    main(*sys.argv[1:8])
