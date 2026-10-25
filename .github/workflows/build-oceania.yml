@@ -1,0 +1,65 @@
+# 호주·뉴질랜드 도시 경계를 만들어 나라별 Release(au-v1, nz-v1)에 올린다.
+# (한국은 build-kr.yml. 나라를 늘릴 때 아래 matrix에 더한다)
+name: build-oceania
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/build_country.py'
+      - '.github/workflows/build-oceania.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - code: AU
+            tag: au-v1
+            title: "호주 도시 경계 v1"
+            pbf: https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf
+          - code: NZ
+            tag: nz-v1
+            title: "뉴질랜드 도시 경계 v1"
+            pbf: https://download.geofabrik.de/australia-oceania/new-zealand-latest.osm.pbf
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 도구 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool
+          pip install --quiet shapely h3 pyproj
+
+      - name: 오픈스트리트맵 자료 내려받기
+        run: curl -sSL -o src.osm.pbf ${{ matrix.pbf }}
+
+      - name: 해안선·다리·행정 경계 뽑기
+        run: |
+          osmium tags-filter src.osm.pbf w/natural=coastline -o coast.osm.pbf --overwrite
+          osmium export coast.osm.pbf --geometry-types=linestring -f geojsonseq -o land.geojsonseq --overwrite
+          osmium tags-filter src.osm.pbf w/bridge w/man_made=pier,breakwater,groyne,quay -o extra.osm.pbf --overwrite
+          osmium export extra.osm.pbf --geometry-types=linestring,polygon -a type,id -f geojsonseq -o extra.geojsonseq --overwrite
+          osmium tags-filter src.osm.pbf r/boundary=administrative -o adm.osm.pbf --overwrite
+          osmium export adm.osm.pbf --geometry-types=polygon -a type,id -f geojsonseq -o adm.geojsonseq --overwrite
+
+      - name: 도시 데이터 만들기
+        run: |
+          python scripts/build_country.py adm.geojsonseq land.geojsonseq extra.geojsonseq ${{ matrix.code }} out | tee log.txt
+          echo "::notice title=${{ matrix.code }} summary::$(tail -n 1 log.txt | cut -c1-3000)"
+
+      - name: Release 업로드
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view ${{ matrix.tag }} >/dev/null 2>&1 || \
+            gh release create ${{ matrix.tag }} --title "${{ matrix.title }}" \
+              --notes "오픈스트리트맵 자료로 만든 도시 경계 (대도시는 1개로 묶음). © OpenStreetMap contributors (ODbL)"
+          gh release upload ${{ matrix.tag }} out/${{ matrix.code }}.cities.geojson.gz out/${{ matrix.code }}.summary.json --clobber
